@@ -1,0 +1,958 @@
+#!/usr/bin/python
+"""
+    This Python script, 'ftrace', generates a function call trace for a
+    program given on the command-line.
+
+    I found that 'strace', which traces system calls, and 'ltrace', which
+    traces library calls, didn't do what I wanted: just trace the function
+    calls in a program. Basically, I had this exact problem:
+    
+        http://stackoverflow.com/questions/311840/tool-to-trace-local-function-calls-in-linux 
+    
+    So I turned the most popular answer--- using readelf and GDB by Johannes
+    Schaub--- into a Python script that can output HTML for OpenGrok and
+    GraphViz DOT to generate a visual representation of the callgraph.
+
+    I'm using it to try to get a handle on 'perf', and have been using it
+    like this:
+    
+        $ ftrace --dot perf | dot -Tsvg -o ftrace.svg
+        $ firefox ftrace.svg
+    
+    or (with OpenGrok):
+    
+        $ ftrace -u http://localhost:8080/source/xref/linux-3.8.8-02-emmet/tools/perf \\
+        > -o ftrace.html perf
+        $ firefox ftrace.html
+
+    TODO: clean up gdb_chat(): it's an ad-hoc mess; objectify the GDB
+        functionality; and add an option to "merge" the common parts of
+        successive backtraces.
+
+    Author: Emmet Caulfield
+    Date: 2013-06-24
+
+"""
+
+import sys
+import os
+import subprocess as sub
+import collections
+from select import select
+import re
+import argparse
+import atexit
+import cgi
+
+
+#==============================================================================
+# Global variables
+#------------------------------------------------------------------------------
+# We need the version string when we're setting up argparse:
+VERSION="0.0.40"
+
+# Command-line options:
+OPT = None
+
+# Command-line option parser:
+CLAP = None
+
+# Length of I/O buffer for talking to subprocesses:
+IO_BUFLEN = 4096
+
+# Command to invoke GDB:
+GDB_CMD = ['gdb', '-q']
+
+# GDB width/height settings:
+GDB_SETTINGS = collections.deque([
+    'set width ' + str(IO_BUFLEN-2),
+    'set height 0'])
+
+# GDB breakpoint setting command:
+GDB_BRKPT_CMD = """b *0x%x
+commands
+  silent
+  bt
+  cont
+end
+"""
+
+# 'readelf' command:
+READELF_CMD = ['readelf', '-s']
+
+# Frame HTML:
+FRAME_HTML = """<tr>
+  <td class="ftrace_stack_pos">%(frameno)d</td>
+  <td class="ftrace_address">%(address)s</td>
+  <td class="ftrace_function">%(function)s</td>
+  <td class="ftrace_file">%(file)s</td>
+  <td class="ftrace_lineno">%(lineno)s</td>
+<tr>
+"""
+FRAME_HTML_LINENO = """<a href="%(prefix)s/%(file)s#%(lineno)d" """ + \
+        """target="opengrok">%(lineno)d</a>"""
+FRAME_HTML_NULLARY = """%(name)s()"""
+FRAME_HTML_NARY = """%(name)s(<span class="ftrace_fn_args_ellipsis" """ + \
+        """title="%(args)s">...</span>"""
+FRAME_HTML_NARY += """<span class="ftrace_fn_args">%(args)s</span>)"""
+#==============================================================================
+
+
+#==============================================================================
+# Utility Functions
+#
+# These normally live in my util.py, but I pasted them here so this would be
+# self-contained.
+#------------------------------------------------------------------------------
+# I snagged this from http://tinyurl.com/yk8to9f and added comments
+def which(program):
+    """Equivalent to shell 'which'; returns None if not found."""
+    def is_exe(fpath):
+        return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+
+    # Check and see if 'program' has path components (i.e. is a
+    # relative or absolute path rather than a single word:
+    fpath, fname = os.path.split(program)
+    if fpath:
+        if is_exe(program):
+            return program
+    # Otherwise, 'program' must be a bare word, so join it to the end
+    # of each directory on the PATH in turn and see which one hits
+    # first:
+    else:
+        for path in os.environ["PATH"].split(os.pathsep):
+            path = path.strip('"')
+            exe_file = os.path.join(path, program)
+            if is_exe(exe_file):
+                return exe_file
+
+    # If nothing hits, above, then 'program' is not on the path:
+    return None
+
+def warn(msg, logToo=True):
+    """Print a warning to stderr, but keep going."""
+    message = "WARNING: " + msg
+    sys.stderr.write(message + ".\n")
+    if logToo:
+        log(message)
+
+
+def log(msg):
+    """Trivial log function that may be enhanced in the future."""
+    if not OPT.log:
+        return
+    if log.file is None:
+        _logfile = "{}.log".format( os.path.basename(sys.argv[0]) )
+        try:
+            log.file = open(_logfile, 'w')
+        except:
+            warn("Unable to open logfile '{}' for output, using stderr" %
+                    _logfile, logToo=False)
+            log.file = sys.stderr
+    else:
+        log.counter += 1
+        log.file.write("%04d: " % log.counter + msg + ".\n")
+        log.file.flush()
+# Initialization of "static" variables for log():
+log.counter = 0
+log.file = None
+
+
+def die(msg, code=1):
+    """Bug out with an error message."""
+    message = "FATAL: " + msg
+    log(message)
+    sys.stderr.write(message + " (see log file).\n")
+    sys.exit(code)
+#==============================================================================
+
+
+#==============================================================================
+# Argument parsing, help, usage, and version messages via 'argparse'
+#------------------------------------------------------------------------------
+def parse_command_line():
+    """Parse command-line arguments and do rudimentary consistency checking"""
+    
+    # We need the argparse.ArgumentParser object to print out a usage message
+    # when we die.
+    global CLAP
+    
+    # Fix the horrid titles and fixed strings in 'argparse':
+    _lookup = {
+        'usage: ': 'USAGE: ',
+        'optional arguments': 'Optional arguments',
+        'positional arguments': 'Positional arguments'
+    }
+
+    def _gettext(s):
+        return _lookup.get(s,s)
+    
+    argparse._ = _gettext
+
+    #----------------------------
+    # Add command-line arguments:
+
+    # 'Help' and 'version' flags are mutually exclusive:
+    CLAP = argparse.ArgumentParser( prog="ftrace", add_help=False,
+            description="Generates a function call trace." )
+    group=CLAP.add_mutually_exclusive_group()
+    group.add_argument('-h', '--help', action='help', 
+            help="print this help message and exit;")
+    group.add_argument('-V', '--version', action='version', version=VERSION,
+            help="print version number and exit;")
+
+    # Copious debug output:
+    CLAP.add_argument('-D', '--debug', action='store_true',
+            help="print copious debug output on stderr;")
+    CLAP.add_argument('-l', '--log', action='store_true',
+            help="turn on logging to ./ftrace.log")
+
+    # Output format:
+    group=CLAP.add_mutually_exclusive_group()
+
+    if which('dot') is not None:
+        group.add_argument('-d', '--dot', action='store_true',
+                help="callgraph as GraphViz DOT;")
+    
+    group.add_argument('-H', '--html', action='store_true',
+            help="HTML output for OpenGrok;")
+            
+    group.add_argument('-t', '--text', action='store_true',
+            help="tab-indented text output (default);")
+
+    # Prune partial path from left of filenames:
+    CLAP.add_argument('-p', '--prune', type=str,
+            help="prune <PATH> from left of filenames;", metavar='<PATH>')
+
+    CLAP.add_argument('-u', '--url', type=str,
+            help="Prepend <URL> to source filenames (HTML only);",
+            metavar='<URL>')
+
+    # Output file:
+    CLAP.add_argument('-o', '--output', type=argparse.FileType('w'),
+            help="output file name (default stdout).", metavar='<FILE>')
+
+    # Positional arguments:
+    CLAP.add_argument('PROG', help='program to trace')
+    CLAP.add_argument('ARGS', metavar='ARG', nargs='*', 
+            help='optional PROG arguments')
+
+    opt = CLAP.parse_args()
+    
+    if opt.url is not None:
+        if opt.html:
+            pass
+        if not opt.text and not opt.dot:
+            warn("HTML option implied by --url/-u")
+            opt.html = True
+
+    return opt
+#==============================================================================
+
+
+#==============================================================================
+# Breakpoint and Frame classes
+#------------------------------------------------------------------------------
+class Breakpoint(object):
+    """Represent a GDB breakpoint"""
+    def __init__(self, number, addr, function_name):
+        self.number  = number if isinstance(number,int) else int(number)
+        self.address = addr if isinstance(addr,int) else int(addr, 16)
+        self.function_name = function_name
+        self.source_file = None
+        self.line_number = None
+
+    def __str__(self):
+        f = '[?]' if self.source_file is None else self.source_file
+        n = '[?]' if self.line_number is None else str(self.line_number)
+
+        return "<%d 0x%x %s()@%s:%s>" % (self.number, self.address, 
+                self.function_name, f, n)
+                
+
+class Frame(object):
+    """Represent a single stack frame or callsite"""
+    
+    _prefix = None
+    _strip = None
+    
+    @classmethod
+    def setUrlPrefix( cls, pfx ):
+        if pfx is not None:
+            Frame._prefix = pfx.rstrip('/')
+        else:
+            Frame._prefix = None
+    
+    @classmethod
+    def setPathPrefixToStrip( cls, pfx ):
+        Frame._strip = pfx
+    
+    
+    def __init__(self, frameText):
+        """Initialize a Frame object from a line of text from GDB"""
+        self.number = None
+        self.address = None
+        self.function = None
+        self.sourceFile = None
+        self.lineNumber = None
+
+        # Strip the GDB stack frame number off the front:
+        bits = frameText.split(None, 1)
+        self.number = int(bits[0][1:])
+
+        bits=bits[1].split(' in ')
+
+        if len(bits)==2:
+            self.address = int(bits[0], 16)
+            bits=bits[1].split(' at ')
+        else:
+            bits=bits[0].split(' at ')
+
+        self.function = bits[0]
+
+        if len(bits) == 2:
+            bits = bits[1].split(':')
+            self.lineNumber = int(bits[-1])
+            self.sourceFile = ':'.join(bits[:-1])
+            if Frame._strip is not None and \
+                    len(self.sourceFile) > len(Frame._strip) and \
+                    self.sourceFile[:len(Frame._strip)] == Frame._strip:
+                self.sourceFile = self.sourceFile[len(Frame._strip):] 
+    
+
+    def isAttrEqual(self, other, attr):
+        """See if an attribute in two Frames is the same, handling 'None'"""
+        a = getattr(self, attr)
+        b = getattr(other, attr)
+        
+        if a is None:
+            if b is not None:
+                return False
+        elif b is None: # and a is not None
+            return False
+        elif a != b: # neither are None:
+            return False
+            
+        return True
+
+
+    def __eq__(self, other):
+        """Equality test for two Frame objects"""
+        if not isinstance(other, Frame):
+            return False
+
+        if self.function != other.function:
+            return False
+            
+        for attr in ('address', 'sourceFile', 'lineNumber'):
+            if not self.isAttrEqual(other, attr):
+                return False
+                
+        return True
+
+            
+    def __str__(self):
+        """Return a string representation of a Frame object"""
+        return '|'.join((
+            str(self.number),
+            '?' if self.address is None else '0x%x' % self.address,
+            self.function,
+            '?' if self.sourceFile is None else self.sourceFile,
+            '?' if self.lineNumber is None else str(self.lineNumber))) 
+
+
+    def asHtml(self):
+        """Dumps a Frame as HTML using FRAME_HTML_* globals as templates"""
+        
+        # The function is the hardest bit because function argument lists can
+        # be very long. We decide if a function is nullary or (n>0)-ary. If
+        # nullary, we use FTRACE_HTML_NULLARY, otherwise FTRACE_HTML_NARY.
+        # The complication is that I'm not 100% certain that there are never
+        # parentheses in the arguments, so we have to ensure that the argument
+        # list remains intact. We do this by assuming that the first '(' is
+        # the start of the argument list, and the last ')' is the end.
+        bits = self.function.split('(')
+        name = bits[0].strip()                            # Function name
+        bits = '('.join(bits[1:]).strip().split(')')
+        args = ')'.join(bits[:-1])                      # Argument list
+        if args:                                        # N-ary
+            fnHtml = FRAME_HTML_NARY % {'name': name, 'args': args}
+        else:
+            fnHtml = FRAME_HTML_NULLARY % {'name': name}
+    
+        args = {
+            'frameno' : self.number,
+            'file'    : '',
+            'address' : '' if self.address is None else '0x%x' % self.address,
+            'function': fnHtml,
+            'lineno'  : ''
+        }
+        if self.sourceFile is not None:
+            args['file']=self.sourceFile.replace(Frame._strip, '', 1)
+        # The last frame in a stack gets the line-number off by one:
+        adj = 1 if self.number==0 else 0
+        if self.lineNumber is not None:
+            args['lineno'] = FRAME_HTML_LINENO % {'prefix': Frame._prefix,
+                    'file': args['file'],
+                    'lineno': self.lineNumber - adj
+        }
+        
+        return FRAME_HTML % args
+#==============================================================================
+
+
+#==============================================================================
+# Auxiliary function definitions
+#------------------------------------------------------------------------------
+def dprint( msg ):
+    """Prints debug messages to stderr if the debug option is set"""
+    global OPT
+    if OPT.debug:
+        sys.stderr.write( msg + '\n' )
+
+
+def usage():
+    """Prints a usage message and dies"""
+    global CLAP
+    CLAP.print_usage()
+    sys.exit(1)
+
+
+def which_or_die( cmd ):
+    """dies unless the given command is on the PATH"""
+    fqp = which( cmd )
+    if fqp is None:
+        die("Required command '%s' not on PATH" % cmd)
+    log( "Using '%s' for '%s'" % (fqp, cmd) )
+    return fqp
+#==============================================================================
+
+
+#==============================================================================
+# Use 'readelf' to get function symbols. Should probably use 'nm' instead.
+#------------------------------------------------------------------------------
+def get_local_symbols( progname ):
+    """Retrieves local function symbols from the given file."""
+    global READELF_CMD
+    which_or_die(READELF_CMD[0])
+    log("Getting function symbols with '%s'" % ' '.join(READELF_CMD))
+
+    fqp = which_or_die( progname )
+
+    cmd = list(READELF_CMD)
+    cmd.append(fqp)
+    try:
+        lines=sub.check_output(cmd).split('\n')
+    except sub.CalledProcessError as cpe:
+        die("Call to {} returned {}".format(cpe.cmd, cpe.returncode))
+
+    n_rejected = 0
+    symtuples = collections.deque()
+    for line in lines[3:]:
+        fld = line.split()
+        sz = len(fld)
+        if sz >= 8 and fld[3]=='FUNC' and int(fld[1],16)!=0 and int(fld[2])!=0: 
+            symtuples.append( (fld[7], int(fld[1], 16)) )
+        else:
+            n_rejected += 1
+
+    total_syms = len(symtuples) + n_rejected;
+    log("%d total symbols in '%s'" % (total_syms, progname))
+    log("%d local function symbols in '%s'" % (len(symtuples), progname))
+    log("%d non-local function and other symbols in '%s'" % (n_rejected, progname) )
+
+    if len(symtuples) == 0:
+        die("No function symbols in '%s'" % progname)
+
+    # Unique-ify symtuples:
+    funcsyms = {}
+    for name,addr in symtuples:
+        if addr in funcsyms and funcsyms[addr]!=name:
+            warn("Function symbol mismatch: %s != %s" % (name, funcsyms[addr]))
+        else:
+            funcsyms[addr] = name
+
+    return funcsyms
+#==============================================================================
+
+
+#==============================================================================
+# Functions for interacting with GDB. Should probably turn this into a class
+# and refactor 'gdb_chat()' heavily: it's a horrible mess.
+#------------------------------------------------------------------------------
+def gdb_cleanup( proc ):
+    """Exit handler for GDB"""
+    if proc.returncode is None:
+        log("Sending SIGTERM to 'gdb' and wait()ing")
+        proc.terminate()
+        rc=proc.wait()
+        log("Wait on GDB returned %d" % rc)
+
+
+def gdb_start( prog ):
+    """Starts GDB and returns a subprocess object."""
+    global GDB_CMS
+    which_or_die(GDB_CMD[0])
+    log("Starting GDB with '%s'" % ' '.join(GDB_CMD))
+    
+    gdb = None
+    cmd = list(GDB_CMD)
+    cmd.append(prog)
+    log("Starting gdb with '%s'" % ' '.join(cmd))
+    try:
+        # bufsize=1 means line buffering:
+        gdb=sub.Popen(cmd, bufsize=1, close_fds=True,
+            stdin=sub.PIPE, stdout=sub.PIPE, stderr=sub.PIPE)
+        atexit.register(gdb_cleanup, gdb)
+    except OSError as oe:
+        die("subprocess.Popen('gdb',...) returned %d, '%s'" % 
+                (oe.errno, oe.strerror))
+    except ValueError as ve:
+        die("subprocess.Popen('gdb',...) raised ValueError: '%s'" % str(ve))
+
+    return gdb
+
+
+def gdb_chat(bp_queue):
+    """Talks to GDB, sets breakpoints, and retrieves backtraces"""
+    global OPT              # Command-line options
+    global GDB_SETTINGS     # Session setting for GDB
+    global GDB_BRKPT_CMD    # GDB set breakpoint command
+    global IO_BUFLEN        # I/O buffer size for I/O with GDB
+
+    bp_in_flight = None
+    n_bps = len(bp_queue)
+
+    gdb=gdb_start(OPT.PROG)
+    
+    r_set = [gdb.stdout, gdb.stderr]
+    w_set = [gdb.stdin]
+    x_set = []
+
+    # We keep output lines from GDB in deques for easy access later:
+    bps_set = collections.deque()
+    backtraces = collections.deque()
+    # We don't expect any output on stderr and we're not going to process it,
+    # so don't bother with a deque:
+    errdata = ""
+
+
+    # Flags for various stages of interaction with GDB:
+    done = False
+    gotPrompt = False
+    gotExit = False
+    sentSettings = False
+    allBpsConfirmed = False
+    sentQuit = False
+    sentRun  = False
+
+    # Compiled regular expressions for different kinds of GDB output:
+    # Prompt:
+    prmRe = re.compile(r'>*(\(gdb\) )+$')
+    # Backtrace lines:
+    stkRe = re.compile(r'^#\d+[ ]+')
+    # Line produced when the program-under-test exits normally:
+    endRe = re.compile(r'^\[Inferior \d+ \(process \d+\) exited')
+    # Line produced when GDB sets a breakpoint:
+    bptRe = re.compile(r'^(?:Breakpoint (\d+) at 0x([0-9a-f]{6,}))(?:: file ([^,]+), line ([0-9]+)\.)?$')
+    # Subprompt noise from setting breakpoints:
+    spnRe = re.compile(r'^>+\(gdb\) |>+$')
+
+    #|Note: breakpoint \d+ also set at')
+    # Lines produced when GDB reads symbols, etc:
+    infoLines = [
+        'Reading symbols from ',
+        'done.',
+        'Starting program: ',
+        'Using host lib',
+        '\[Thread debugging using libthread_db enabled\]',
+        #    '>{1,4}(\(gdb\))?[ ]?',
+        'Note: breakpoint \d+ also set at pc 0x[0-9a-f]{6,}\.$'
+    ]
+    ackRe = re.compile( '|'.join(infoLines) )
+
+    # Input buffer:
+    inbuf = ''
+
+    # Breakpoint number:
+    bpNum = 0
+
+    # FIXME: This is a mess
+    while not done:
+        r_rdy = []  # Ready-to-read FD set
+        w_rdy = []  # Ready-to-write FD set
+        x_rdy = []  # Ready-to-have exception handled FD set
+
+        try:
+            # Don't wait-to-write unless we've got the prompt, otherwise we'll
+            # spin like crazy:
+            if gotPrompt:
+                r_rdy, w_rdy, x_rdy = select(r_set, w_set, x_set)
+            else:
+                r_rdy, w_rdy, x_rdy = select(r_set, [], x_set)
+
+        except Exception as e:
+            die("select() threw exception '%s'" % str(e))
+        
+        if x_rdy:
+            die("This shouldn't happen. Ever: '%s'" % str(x_rdy))
+    
+        if r_rdy:
+            for fo in r_rdy:
+                if fo is gdb.stdout:
+                    chunk = os.read( fo.fileno(), IO_BUFLEN )
+#                   dprint("[%s] '%i'" % (chunk, len(chunk)))
+                    dprint("[%s]" % chunk)
+                    inbuf += chunk
+                    if len(chunk)>0 and chunk[-1] != '\n' and len(chunk)>5 and chunk[-6:]!='(gdb) ':
+                    # Not a complete line
+                        continue
+
+                    dprint("/%s/" % inbuf)
+                    lines = inbuf.split('\n')
+                    inbuf = ''
+                    for line in lines:
+                        dprint("    |%s|" % line)
+                        line=spnRe.sub('', line)
+                        dprint("    :%s:" % line)
+                        m = bptRe.match(line)
+                        if m:
+                            if bp_in_flight is not None:
+                                n,a,filename,l, = m.groups()
+                                number = int(n)
+                                address = int(a, 16)
+                                lineno = int(l) if l is not None else None
+                                bp = bp_in_flight
+                                if bp.number != number:
+                                    warn("Breakpoint number mismatch: %d != %d" % (bp.number, number))
+                                if bp.address != address:
+                                    warn("Breakpoint address mismatch: %x != %x" % (bp.address, address))
+                                bp.source_file = filename
+                                bp.line_number = lineno
+                                bps_set.append(line)
+                                dprint('\t--- breakpoint %s confirmed' % str(bp))
+                                log("Confirmed breakpoint " + str(bp))
+                                bp_in_flight = None
+                                if len(bp_queue) == 0:
+                                    allBpsConfirmed = True
+                                    log("All breakpoints sent and confirmed")
+                            else:
+                                warn("Unexpected breakpoint confirmation '%s'", line)
+                        
+                        elif stkRe.match(line):
+                            backtraces.append(line)
+                            dprint('\t--- backtrace line')
+                            log("Received frame: '%s'" % line)
+                        elif endRe.match(line):
+                            dprint('\t--- subprocess exit line')
+                            log("Got subprocess exit line from GDB")
+                            gotExit = True
+                        elif ackRe.match(line):
+                            dprint('\t--- known noise.')
+#                           log('Discarding known noise line (%s)' % line)
+                        elif prmRe.search(line):
+                            gotPrompt = True
+                            dprint('\t--- prompt')
+                        elif line:
+                            dprint('\t--- unrecognized, discarding "%s"' % line)
+
+                    if sentQuit:
+                        log("Setting 'done' flag")
+                        done = True
+                             
+                elif fo is gdb.stderr:
+                    chunk = os.read( fo.fileno(), IO_BUFLEN )
+                    if chunk:
+                        errdata += chunk
+                        die( "Nonempty read from stderr: '%s'" % chunk)
+                else:
+                    die("Unrecognized file object: '%s'" % str(fo))
+                
+        if w_rdy:
+            fo, = w_rdy
+            if fo is gdb.stdin:
+#                bpn = bp_in_flight.number if bp_in_flight is not None else 0
+#                print( (gotPrompt, done, gotExit, sentSettings, sentRun, 
+#                        sentQuit, bpn) )
+                if gotPrompt:
+                    # Assume that we're actually going to write something (we'll
+                    # fix this up at the end):
+                    gotPrompt = False
+
+                    if len(GDB_SETTINGS) > 0:
+                        try:
+                            setting = GDB_SETTINGS.popleft()
+                            log("Sending setting '%s' to GDB" % setting)
+                            os.write( fo.fileno(), setting + "\n" )
+                            fo.flush()
+                        except IndexError as ie:
+                            die("Got index error trying to pop settings deque")
+                        except OSError as oe:
+                            die("Got OSError sending setting to GDB")
+                        if len(GDB_SETTINGS) == 0:
+                            sentSettings = True
+
+                    elif len(bp_queue)>0:
+                        if bp_in_flight is not None:
+                            continue
+                        try:
+                            bp = bp_queue.popleft()
+                            bpNum += 1
+                            if bpNum != bp.number:
+                                warn("Breakpoint number mismatch %d!=%d" % (bpNum, bp.number))
+                            dprint("--- setting bp (%s)" % str(bp))
+                            log("Setting breakpoint %d/%d: %s" % (bpNum,n_bps,str(bp)))
+                            os.write( fo.fileno(), GDB_BRKPT_CMD % bp.address )
+                            fo.flush()
+                            bp_in_flight = bp
+                        except IndexError as ie:
+                            die("Got index error trying to pop breakpoint deque")
+                        except OSError as oe:
+                            die("Got OSError writing breakpoint to gdb's stdin")
+                    elif allBpsConfirmed and not sentRun:
+                        try:
+                            cmd = 'run '
+                            if OPT.ARGS:
+                                cmd += ' '.join(OPT.ARGS) + ' '
+                            cmd += '> /dev/null'
+                            log("Sending '%s' to GDB" % cmd)
+                            os.write(fo.fileno(), cmd + '\n')
+                            fo.flush()
+                            sentRun = True
+                        except OSError as oe:
+                            die("Got OSError writing 'run' to GDB's stdin")
+                    elif gotExit and not done:
+                        try:
+                            log("Sending 'quit' to GDB")
+                            os.write( fo.fileno(), "quit\n" )
+                            fo.flush()
+                            sentQuit = True
+                        except OSError as oe:
+                            die("Got OSError writing 'exit' to GDB's stdin")
+                    else:
+                        # Don't eat the prompt unless we wrote something. otherwise
+                        # we'll deadlock:
+                        gotPrompt = True
+                        #sys.stdout.write( '\b' + spinner[spin % 4] )
+                        #spin += 1
+            else:
+                    die("Write pipe is not gdb's stdin")
+
+    rc = gdb.wait()
+    if rc == 0:
+        log( "GDB exited normally" )
+    else:
+        log( "GDB exited with code %d" % rc )
+
+
+    # Collect the sequences of stack frames into stack dumps, reversing the
+    # stackdumps as we go so that they list callers from left-to-right (or 
+    # top-to-bottom, if you like):
+    stackdumps = collections.deque()
+    stack = collections.deque()
+    stackNo = 0
+    n_frames = len(backtraces)
+    while len(backtraces) > 0:
+        frame = Frame( backtraces.popleft() )
+        if frame.number == 0:
+            if len(stack) > 0:
+                stackdumps.append( (stackNo,stack) )
+                stackNo += 1
+            stack = collections.deque()
+        stack.appendleft( frame )
+
+    log("Collected %d frames in %d backtraces" % 
+            (n_frames, len(stackdumps)))
+
+        
+    return stackdumps
+#==============================================================================
+
+
+#==============================================================================
+# Dump stacks as text, html, and GraphViz "DOT" language
+#------------------------------------------------------------------------------
+def dump_stacks_as_html(stackdumps, fd=sys.stdout):
+    """Dumps stacks as HTML tables"""
+#    fd.write("""<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+#<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" >
+    fd.write("""<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ftrace Stack Dumps</title>
+    <style type="text/css">
+/*<![CDATA[ */
+html, body, div#ftrace, iframe#opengrok {
+    height: 100%;
+}
+iframe#opengrok, div#ftrace {
+    overflow: scroll;
+}
+div#ftrace {
+    width: 34%;
+    float: left;
+}
+iframe#opengrok {
+    width: 64%;
+}
+p {
+    margin-bottom: 1px;
+    font-weight: bold;
+}
+
+table {
+    border-collapse: collapse;
+    border: 1px solid black;
+}
+th {
+    font-size: smaller;
+}
+td {
+    font-family: monospace;
+}
+th, td {
+    margin: 0px;
+    border: 1px solid black;
+    padding: 1px 1em 1px 1em;
+}
+.ftrace_fn_args, .ftrace_stack_pos {
+    display: none;
+}
+.ftrace_fn_args_ellipsis {
+    border: none;
+    padding: 0px;
+}
+.ftrace_lineno, .ftrace_address {
+    text-align: right;
+}
+/*]]>>*/
+    </style>
+  </head>
+  <body>
+    <div id="ftrace">
+""")
+    dumped_stacks = collections.deque()
+    for num,stk in stackdumps:
+        is_dupe = False
+        for d_num, d_stk in dumped_stacks:
+            if stk == d_stk:
+                is_dupe = True
+                fd.write( '    <p>Stackdump %d is a duplicate of <a href="#sd_%d">%d</a>, not dumping</a></p>\n' % (num, d_num, d_num))
+                break
+
+        if not is_dupe:
+            indent = 1
+            dumped_stacks.appendleft( (num, stk) )
+            fd.write( '    <p id="sd_%d">Stackdump %d:</p>\n    <table>\n' % (num,num) )
+            fd.write( '<tr><th>Addr.</th><th>Function</th><th>File</th><th>Line No.</th></tr>' )
+            for frame in stk:
+                fd.write( '    ' + "  "*indent + frame.asHtml() + "\n")
+                indent += 1
+            fd.write( '    </table>\n' )
+
+    fd.write("""
+    </div>
+    <iframe name="opengrok" id="opengrok" src="%s">
+    </iframe>
+  </body>
+</html>
+""" % Frame._prefix)
+    
+    
+
+def dump_stacks_as_text(stackdumps, fd=sys.stdout):
+    """Dumps stacks as tab-indented text"""
+
+    dumped_stacks = collections.deque()
+    for num,stk in stackdumps:
+        is_dupe = False
+        for d_num, d_stk in dumped_stacks:
+            if stk == d_stk:
+                is_dupe = True
+                print( "(Stackdump %d is a duplicate of %d, not dumping)" % (num, d_num))
+                break
+
+        if not is_dupe:
+            indent = 1
+            dumped_stacks.appendleft( (num, stk) )
+            print( "Stackdump %d:" % num )
+            for frame in stk:
+                print( "\t"*indent + str(frame))
+                indent += 1
+                
+
+def dump_stacks_as_dot(stackdumps, fd=sys.stdout):
+    """Dumps stacks as GraphViz DOT"""
+
+    # We should only see functions with external linkage, so function names
+    # should be unique:
+    nodes = set()
+    arcs = {}
+    for num,stack in stackdumps: 
+        for i in range(len(stack)-1):
+            src = stack[i]
+            dst = stack[i+1]
+            nodes.add( src.function.split()[0] )
+            arc = (src.function.split()[0], dst.function.split()[0])
+            lnr=src.lineNumber
+            if lnr is not None:
+                lbl = "%s:%d" % (src.sourceFile,lnr)
+            else:
+                lbl = '[None]'
+            if arc in arcs:
+                arcs[arc].add(lbl)
+            else:
+                arcs[arc] = set([lbl])
+
+        nodes.add(stack[-1].function.split()[0])
+        
+    fd.write("""digraph ftrace {
+    node [shape=box, style=rounded]
+""")
+
+    for (src,dst),labels in arcs.items():
+        for lbl in labels:
+            fd.write('    %s -> %s [label="%s"]\n' % (src,dst,lbl))
+    fd.write('}\n')
+#==============================================================================
+
+
+#==============================================================================
+# main()
+#------------------------------------------------------------------------------
+def main():
+    """Do as little as possible :)"""
+
+    global OPT
+    OPT = parse_command_line()
+
+    Frame.setUrlPrefix( OPT.url )
+    Frame.setPathPrefixToStrip( OPT.prune )
+
+    funcsyms = get_local_symbols( OPT.PROG )
+    bp_queue = collections.deque()
+    bpNum = 1
+    for addr in sorted(funcsyms):
+        bp_queue.append( Breakpoint(bpNum, addr, funcsyms[addr]) )
+        bpNum += 1
+
+    stackdumps = gdb_chat(bp_queue)
+
+    fd = sys.stdout
+    if OPT.output:
+        fd = OPT.output
+
+    if OPT.html:
+        dump_stacks_as_html(stackdumps, fd)
+    elif OPT.dot:
+        dump_stacks_as_dot(stackdumps, fd)
+    else:
+        dump_stacks_as_text(stackdumps, fd)
+        
+    if fd != sys.stdin:
+        fd.close()
+
+if __name__ == '__main__':
+    main()
+#==============================================================================

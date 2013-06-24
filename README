@@ -1,0 +1,188 @@
+Help on module ftrace:
+
+NAME
+    ftrace
+
+FILE
+    /home/emmet/WIP/ftrace/ftrace
+
+DESCRIPTION
+    This Python script, 'ftrace', generates a function call trace for a
+    program given on the command-line.
+    
+    I found that 'strace', which traces system calls, and 'ltrace', which
+    traces library calls, didn't do what I wanted: just trace the function
+    calls in a program. Basically, I had this exact problem:
+    
+        http://stackoverflow.com/questions/311840/tool-to-trace-local-function-calls-in-linux 
+    
+    So I turned the most popular answer--- using readelf and GDB by Johannes
+    Schaub--- into a Python script that can output HTML for OpenGrok and
+    GraphViz DOT to generate a visual representation of the callgraph.
+    
+    I'm using it to try to get a handle on 'perf', and have been using it
+    like this:
+    
+        $ ftrace --dot perf | dot -Tsvg -o ftrace.svg
+        $ firefox ftrace.svg
+    
+    or (with OpenGrok):
+    
+        $ ftrace -u http://localhost:8080/source/xref/linux-3.8.8-02-emmet/tools/perf \
+        > -o ftrace.html perf
+        $ firefox ftrace.html
+    
+    TODO: clean up gdb_chat(): it's an ad-hoc mess; objectify the GDB
+        functionality; and add an option to "merge" the common parts of
+        successive backtraces.
+    
+    Author: Emmet Caulfield
+    Date: 2013-06-24
+
+CLASSES
+    __builtin__.object
+        Breakpoint
+        Frame
+    
+    class Breakpoint(__builtin__.object)
+     |  Represent a GDB breakpoint
+     |  
+     |  Methods defined here:
+     |  
+     |  __init__(self, number, addr, function_name)
+     |  
+     |  __str__(self)
+     |  
+     |  ----------------------------------------------------------------------
+     |  Data descriptors defined here:
+     |  
+     |  __dict__
+     |      dictionary for instance variables (if defined)
+     |  
+     |  __weakref__
+     |      list of weak references to the object (if defined)
+    
+    class Frame(__builtin__.object)
+     |  Represent a single stack frame or callsite
+     |  
+     |  Methods defined here:
+     |  
+     |  __eq__(self, other)
+     |      Equality test for two Frame objects
+     |  
+     |  __init__(self, frameText)
+     |      Initialize a Frame object from a line of text from GDB
+     |  
+     |  __str__(self)
+     |      Return a string representation of a Frame object
+     |  
+     |  asHtml(self)
+     |      Dumps a Frame as HTML using FRAME_HTML_* globals as templates
+     |  
+     |  isAttrEqual(self, other, attr)
+     |      See if an attribute in two Frames is the same, handling 'None'
+     |  
+     |  ----------------------------------------------------------------------
+     |  Class methods defined here:
+     |  
+     |  setPathPrefixToStrip(cls, pfx) from __builtin__.type
+     |  
+     |  setUrlPrefix(cls, pfx) from __builtin__.type
+     |  
+     |  ----------------------------------------------------------------------
+     |  Data descriptors defined here:
+     |  
+     |  __dict__
+     |      dictionary for instance variables (if defined)
+     |  
+     |  __weakref__
+     |      list of weak references to the object (if defined)
+
+FUNCTIONS
+    die(msg, code=1)
+        Bug out with an error message.
+    
+    dprint(msg)
+        Prints debug messages to stderr if the debug option is set
+    
+    dump_stacks_as_dot(stackdumps, fd=<open file '<stdout>', mode 'w'>)
+        Dumps stacks as GraphViz DOT
+    
+    dump_stacks_as_html(stackdumps, fd=<open file '<stdout>', mode 'w'>)
+        Dumps stacks as HTML tables
+    
+    dump_stacks_as_text(stackdumps, fd=<open file '<stdout>', mode 'w'>)
+        Dumps stacks as tab-indented text
+    
+    gdb_chat(bp_queue)
+        Talks to GDB, sets breakpoints, and retrieves backtraces
+    
+    gdb_cleanup(proc)
+        Exit handler for GDB
+    
+    gdb_start(prog)
+        Starts GDB and returns a subprocess object.
+    
+    get_local_symbols(progname)
+        Retrieves local function symbols from the given file.
+    
+    log(msg)
+        Trivial log function that may be enhanced in the future.
+    
+    main()
+        Do as little as possible :)
+    
+    parse_command_line()
+        Parse command-line arguments and do rudimentary consistency checking
+    
+    select(...)
+        select(rlist, wlist, xlist[, timeout]) -> (rlist, wlist, xlist)
+        
+        Wait until one or more file descriptors are ready for some kind of I/O.
+        The first three arguments are sequences of file descriptors to be waited for:
+        rlist -- wait until ready for reading
+        wlist -- wait until ready for writing
+        xlist -- wait for an ``exceptional condition''
+        If only one kind of condition is required, pass [] for the other lists.
+        A file descriptor is either a socket or file object, or a small integer
+        gotten from a fileno() method call on one of those.
+        
+        The optional 4th argument specifies a timeout in seconds; it may be
+        a floating point number to specify fractions of seconds.  If it is absent
+        or None, the call will never time out.
+        
+        The return value is a tuple of three lists corresponding to the first three
+        arguments; each contains the subset of the corresponding file descriptors
+        that are ready.
+        
+        *** IMPORTANT NOTICE ***
+        On Windows and OpenVMS, only sockets are supported; on Unix, all file
+        descriptors can be used.
+    
+    usage()
+        Prints a usage message and dies
+    
+    warn(msg, logToo=True)
+        Print a warning to stderr, but keep going.
+    
+    which(program)
+        Equivalent to shell 'which'; returns None if not found.
+    
+    which_or_die(cmd)
+        dies unless the given command is on the PATH
+
+DATA
+    CLAP = None
+    FRAME_HTML = '<tr>\n  <td class="ftrace_stack_pos">%(frameno)d<...  <t...
+    FRAME_HTML_LINENO = '<a href="%(prefix)s/%(file)s#%(lineno)d" target="...
+    FRAME_HTML_NARY = '%(name)s(<span class="ftrace_fn_args_ellipsis" t......
+    FRAME_HTML_NULLARY = '%(name)s()'
+    GDB_BRKPT_CMD = 'b *0x%x\ncommands\n  silent\n  bt\n  cont\nend\n'
+    GDB_CMD = ['gdb', '-q']
+    GDB_SETTINGS = deque(['set width 4094', 'set height 0'])
+    IO_BUFLEN = 4096
+    OPT = None
+    READELF_CMD = ['readelf', '-s']
+    VERSION = '0.0.40'
+
+
