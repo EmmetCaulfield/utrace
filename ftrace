@@ -176,6 +176,7 @@ def parse_command_line():
     # We need the argparse.ArgumentParser object to print out a usage message
     # when we die.
     global CLAP
+    global OPT
     
     # Fix the horrid titles and fixed strings in 'argparse':
     _lookup = {
@@ -237,16 +238,16 @@ def parse_command_line():
     CLAP.add_argument('ARGS', metavar='ARG', nargs='*', 
             help='optional PROG arguments')
 
-    opt = CLAP.parse_args()
+    OPT = CLAP.parse_args()
     
-    if opt.url is not None:
-        if opt.html:
+    if OPT.url is not None:
+        if OPT.html:
             pass
-        if not opt.text and not opt.dot:
+        if not OPT.text and not OPT.dot:
             warn("HTML option implied by --url/-u")
-            opt.html = True
+            OPT.html = True
 
-    return opt
+    return OPT
 #==============================================================================
 
 
@@ -382,20 +383,20 @@ class Frame(object):
     
         args = {
             'frameno' : self.number,
-            'file'    : '',
+            'file'    : '' if self.sourceFile is None else self.sourceFile,
             'address' : '' if self.address is None else '0x%x' % self.address,
             'function': fnHtml,
             'lineno'  : ''
         }
-        if self.sourceFile is not None:
-            args['file']=self.sourceFile.replace(Frame._strip, '', 1)
+
         # The last frame in a stack gets the line-number off by one:
         adj = 1 if self.number==0 else 0
         if self.lineNumber is not None:
-            args['lineno'] = FRAME_HTML_LINENO % {'prefix': Frame._prefix,
-                    'file': args['file'],
-                    'lineno': self.lineNumber - adj
-        }
+            args['lineno'] = FRAME_HTML_LINENO % {
+                'prefix': '' if Frame._prefix is None else Frame._prefix,
+                'file': args['file'],
+                'lineno': self.lineNumber - adj
+            }
         
         return FRAME_HTML % args
 #==============================================================================
@@ -783,24 +784,25 @@ def dump_stacks_as_html(stackdumps, fd=sys.stdout):
     <title>ftrace Stack Dumps</title>
     <style type="text/css">
 /*<![CDATA[ */
-html, body, div#ftrace, iframe#opengrok {
+html, body, div#ftrace, div#right, iframe#opengrok {
     height: 100%;
 }
-iframe#opengrok, div#ftrace {
-    overflow: scroll;
+body, iframe#opengrok, div#right {
+    overflow: hidden;
 }
 div#ftrace {
-    width: 34%;
+    overflow: scroll;
+    width: 500px;
     float: left;
 }
 iframe#opengrok {
-    width: 64%;
+    width: 100%;
 }
+
 p {
     margin-bottom: 1px;
     font-weight: bold;
 }
-
 table {
     border-collapse: collapse;
     border: 1px solid black;
@@ -814,7 +816,7 @@ td {
 th, td {
     margin: 0px;
     border: 1px solid black;
-    padding: 1px 1em 1px 1em;
+    padding: 1px 1ex 1px 1ex;
 }
 .ftrace_fn_args, .ftrace_stack_pos {
     display: none;
@@ -853,12 +855,14 @@ th, td {
 
     fd.write("""
     </div>
-    <iframe name="opengrok" id="opengrok" src="%s">
-    </iframe>
+    <div id="right">
+        <iframe name="opengrok" id="opengrok" src="%s">
+        </iframe>
+    </div>
   </body>
 </html>
-""" % Frame._prefix)
-    
+""" % ('about:blank' if Frame._prefix is None else Frame._prefix))
+    fd.flush()
     
 
 def dump_stacks_as_text(stackdumps, fd=sys.stdout):
