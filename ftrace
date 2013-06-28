@@ -231,7 +231,11 @@ def parse_command_line():
 
     # Output file:
     CLAP.add_argument('-o', '--output', type=argparse.FileType('w'),
-            help="output file name (default stdout).", metavar='<FILE>')
+            help="output file name (default stdout);", metavar='<FILE>')
+            
+    # Save file for subprogram output:
+    CLAP.add_argument('-s', '--save-file', type=str, default="/dev/null",
+            help="file for PROG output (default /dev/null).", metavar='<FILE>')
 
     # Positional arguments:
     CLAP.add_argument('PROG', help='program to trace')
@@ -721,7 +725,7 @@ def gdb_chat(bp_queue):
                             cmd = 'run '
                             if OPT.ARGS:
                                 cmd += ' '.join(OPT.ARGS) + ' '
-                            cmd += '> /dev/null'
+                            cmd += '> ' + OPT.save_file
                             log("Sending '%s' to GDB" % cmd)
                             os.write(fo.fileno(), cmd + '\n')
                             fo.flush()
