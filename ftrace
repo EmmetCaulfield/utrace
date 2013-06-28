@@ -524,6 +524,7 @@ def gdb_chat(bp_queue):
     bp_in_flight = None
     n_bps = len(bp_queue)
 
+    kill_gdb = False
     gdb=gdb_start(OPT.PROG)
     
     r_set = [gdb.stdout, gdb.stderr]
@@ -594,7 +595,12 @@ def gdb_chat(bp_queue):
 
         except Exception as e:
             die("select() threw exception '%s'" % str(e))
-        
+        except KeyboardInterrupt as ki:
+            warn("select() interrupted by ^C")
+            kill_gdb = True
+            break
+
+
         if x_rdy:
             die("This shouldn't happen. Ever: '%s'" % str(x_rdy))
     
@@ -738,6 +744,9 @@ def gdb_chat(bp_queue):
                         #spin += 1
             else:
                     die("Write pipe is not gdb's stdin")
+
+    if kill_gdb:
+        gdb.terminate()
 
     rc = gdb.wait()
     if rc == 0:
