@@ -774,6 +774,7 @@ def gdb_chat(bp_queue):
                 stackNo += 1
             stack = collections.deque()
         stack.appendleft( frame )
+    stackdumps.append( (stackNo,stack) )
 
     log("Collected %d frames in %d backtraces" % 
             (n_frames, len(stackdumps)))
