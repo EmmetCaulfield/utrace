@@ -49,7 +49,7 @@ import cgi
 # Global variables
 #------------------------------------------------------------------------------
 # We need the version string when we're setting up argparse:
-VERSION="0.0.44"
+VERSION="0.0.45"
 
 # Command-line options:
 OPT = None
@@ -97,9 +97,9 @@ FRAME_HTML_NARY = """%(name)s(<span class="ftrace_fn_args_ellipsis" """ + \
 FRAME_HTML_NARY += """<span class="ftrace_fn_args">%(args)s</span>)"""
 
 # Frame DOT templates:
-FRAME_DOT_ARC = """%(src)s -> %(dst)s [label="%(file)s:%(lineno)s", """ + \
+FRAME_DOT_EDGE = """%(src)s -> %(dst)s [label="%(file)s:%(lineno)s", """ + \
         """URL="%(prefix)s/%(file)s#%(lineno)s", fontcolor="blue"]"""
-FRAME_DOT_ARC_NO_URL = """%(src)s -> %(dst)s [label="%(file)s:%(lineno)s"]"""
+FRAME_DOT_EDGE_NO_URL = """%(src)s -> %(dst)s [label="%(file)s:%(lineno)s"]"""
 
 #==============================================================================
 
@@ -373,6 +373,8 @@ class Frame(object):
 
 
     def templateDict(self):
+        """Returns a dictionary for use with HTML and DOT templates"""
+        
         # The function is the hardest bit because function argument lists can
         # be very long. We decide if a function is nullary or (n>0)-ary. If
         # nullary, we use FTRACE_HTML_NULLARY, otherwise FTRACE_HTML_NARY.
@@ -915,30 +917,29 @@ def dump_stacks_as_dot(stackdumps, fd=sys.stdout):
 
     # We should only see functions with external linkage, so function names
     # should be unique.
-    arcs = {}
+    edges = {}
     for num,stack in stackdumps: 
         for i in range(len(stack)-1):
             src = stack[i]
             dst = stack[i+1]
-            arc = (src.function.split()[0], dst.function.split()[0])
+            edge = (src.function.split()[0], dst.function.split()[0])
             td = src.templateDict()
-            if arc in arcs:
-                arcs[arc][td['lineno']] = td
+            if edge in edges:
+                edges[edge][td['lineno']] = td
             else:
-                arcs[arc] = {td['lineno']: td}
+                edges[edge] = {td['lineno']: td}
 
-        
     fd.write("""digraph ftrace {
     node [shape=box, style=rounded]
 """)
 
     if Frame._prefix is not None and Frame._prefix:
-        tmpl = FRAME_DOT_ARC
+        tmpl = FRAME_DOT_EDGE
     else:
-        tmpl = FRAME_DOT_ARC_NO_URL
+        tmpl = FRAME_DOT_EDGE_NO_URL
 
-    for (src,dst),nodes in arcs.items():
-        for (nr,td) in nodes.items():
+    for (src,dst),nodes in edges.items():
+        for (nr,td) in edges.items():
             td['src']=src
             td['dst']=dst
             fd.write('    ' + tmpl % td + '\n')

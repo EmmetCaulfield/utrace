@@ -82,6 +82,9 @@ CLASSES
      |  isAttrEqual(self, other, attr)
      |      See if an attribute in two Frames is the same, handling 'None'
      |  
+     |  templateDict(self)
+     |      Returns a dictionary for use with HTML and DOT templates
+     |  
      |  ----------------------------------------------------------------------
      |  Class methods defined here:
      |  
@@ -173,8 +176,10 @@ FUNCTIONS
 
 DATA
     CLAP = None
-    FRAME_HTML = '<tr>\n  <td class="ftrace_stack_pos">%(frameno)d<...  <t...
-    FRAME_HTML_LINENO = '<a href="%(prefix)s/%(file)s#%(lineno)d" target="...
+    FRAME_DOT_EDGE = '%(src)s -> %(dst)s [label="%(file)s:%(lineno)s",...(...
+    FRAME_DOT_EDGE_NO_URL = '%(src)s -> %(dst)s [label="%(file)s:%(lineno)...
+    FRAME_HTML = '<tr>\n  <td class="ftrace_stack_pos">%(frameno)s<...  <t...
+    FRAME_HTML_LINENO = '<a href="%(prefix)s/%(file)s#%(lineno)s" target="...
     FRAME_HTML_NARY = '%(name)s(<span class="ftrace_fn_args_ellipsis" t......
     FRAME_HTML_NULLARY = '%(name)s()'
     GDB_BRKPT_CMD = 'b *0x%x\ncommands\n  silent\n  bt\n  cont\nend\n'
@@ -183,6 +188,6 @@ DATA
     IO_BUFLEN = 4096
     OPT = None
     READELF_CMD = ['readelf', '-s']
-    VERSION = '0.0.40'
+    VERSION = '0.0.45'
 
 
