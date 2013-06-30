@@ -49,7 +49,7 @@ import cgi
 # Global variables
 #------------------------------------------------------------------------------
 # We need the version string when we're setting up argparse:
-VERSION="0.0.40"
+VERSION="0.0.44"
 
 # Command-line options:
 OPT = None
@@ -80,21 +80,27 @@ end
 # 'readelf' command:
 READELF_CMD = ['readelf', '-s']
 
-# Frame HTML:
+# Frame HTML templates:
 FRAME_HTML = """<tr>
-  <td class="ftrace_stack_pos">%(frameno)d</td>
+  <td class="ftrace_stack_pos">%(frameno)s</td>
   <td class="ftrace_address">%(address)s</td>
   <td class="ftrace_function">%(function)s</td>
   <td class="ftrace_file">%(file)s</td>
   <td class="ftrace_lineno">%(lineno)s</td>
 <tr>
 """
-FRAME_HTML_LINENO = """<a href="%(prefix)s/%(file)s#%(lineno)d" """ + \
-        """target="opengrok">%(lineno)d</a>"""
+FRAME_HTML_LINENO = """<a href="%(prefix)s/%(file)s#%(lineno)s" """ + \
+        """target="opengrok">%(lineno)s</a>"""
 FRAME_HTML_NULLARY = """%(name)s()"""
 FRAME_HTML_NARY = """%(name)s(<span class="ftrace_fn_args_ellipsis" """ + \
         """title="%(args)s">...</span>"""
 FRAME_HTML_NARY += """<span class="ftrace_fn_args">%(args)s</span>)"""
+
+# Frame DOT templates:
+FRAME_DOT_ARC = """%(src)s -> %(dst)s [label="%(file)s:%(lineno)s", """ + \
+        """URL="%(prefix)s/%(file)s#%(lineno)s", fontcolor="blue"]"""
+FRAME_DOT_ARC_NO_URL = """%(src)s -> %(dst)s [label="%(file)s:%(lineno)s"]"""
+
 #==============================================================================
 
 
@@ -226,7 +232,7 @@ def parse_command_line():
             help="prune <PATH> from left of filenames;", metavar='<PATH>')
 
     CLAP.add_argument('-u', '--url', type=str,
-            help="Prepend <URL> to source filenames (HTML only);",
+            help="Prepend <URL> to source filenames;",
             metavar='<URL>')
 
     # Output file:
@@ -245,11 +251,11 @@ def parse_command_line():
     OPT = CLAP.parse_args()
     
     if OPT.url is not None:
-        if OPT.html:
+        if OPT.html or OPT.dot:
             pass
-        if not OPT.text and not OPT.dot:
-            warn("HTML option implied by --url/-u")
-            OPT.html = True
+        else:
+            warn("Meaningless URL option ignored")
+            OPT.url = None
 
     return OPT
 #==============================================================================
@@ -366,9 +372,7 @@ class Frame(object):
             '?' if self.lineNumber is None else str(self.lineNumber))) 
 
 
-    def asHtml(self):
-        """Dumps a Frame as HTML using FRAME_HTML_* globals as templates"""
-        
+    def templateDict(self):
         # The function is the hardest bit because function argument lists can
         # be very long. We decide if a function is nullary or (n>0)-ary. If
         # nullary, we use FTRACE_HTML_NULLARY, otherwise FTRACE_HTML_NARY.
@@ -377,30 +381,36 @@ class Frame(object):
         # list remains intact. We do this by assuming that the first '(' is
         # the start of the argument list, and the last ')' is the end.
         bits = self.function.split('(')
-        name = bits[0].strip()                            # Function name
+        name = bits[0].strip()                          # Function name
         bits = '('.join(bits[1:]).strip().split(')')
-        args = ')'.join(bits[:-1])                      # Argument list
-        if args:                                        # N-ary
-            fnHtml = FRAME_HTML_NARY % {'name': name, 'args': args}
-        else:
-            fnHtml = FRAME_HTML_NULLARY % {'name': name}
-    
-        args = {
-            'frameno' : self.number,
-            'file'    : '' if self.sourceFile is None else self.sourceFile,
-            'address' : '' if self.address is None else '0x%x' % self.address,
-            'function': fnHtml,
-            'lineno'  : ''
-        }
+        args = ')'.join(bits[:-1])                      # Argument list            
 
         # The last frame in a stack gets the line-number off by one:
         adj = 1 if self.number==0 else 0
+
+        d = {
+            'name'   : name,
+            'args'   : args,
+            'frameno': str(self.number),
+            'file'   : '' if self.sourceFile is None else self.sourceFile,
+            'address': '' if self.address is None else '0x%x' % self.address,
+            'prefix' : '' if Frame._prefix is None else Frame._prefix,
+            'lineno' : '' if self.lineNumber is None else str(self.lineNumber-adj)
+        }
+        return d
+
+
+    def asHtml(self):
+        """Dumps a Frame as HTML using FRAME_HTML_* globals as templates"""
+        args = self.templateDict()
+
+        if args['args']:                                        # N-ary
+            args['function'] = FRAME_HTML_NARY % args
+        else:
+            args['function'] = FRAME_HTML_NULLARY % args
+
         if self.lineNumber is not None:
-            args['lineno'] = FRAME_HTML_LINENO % {
-                'prefix': '' if Frame._prefix is None else Frame._prefix,
-                'file': args['file'],
-                'lineno': self.lineNumber - adj
-            }
+            args['lineno'] = FRAME_HTML_LINENO % args
         
         return FRAME_HTML % args
 #==============================================================================
@@ -904,34 +914,34 @@ def dump_stacks_as_dot(stackdumps, fd=sys.stdout):
     """Dumps stacks as GraphViz DOT"""
 
     # We should only see functions with external linkage, so function names
-    # should be unique:
-    nodes = set()
+    # should be unique.
     arcs = {}
     for num,stack in stackdumps: 
         for i in range(len(stack)-1):
             src = stack[i]
             dst = stack[i+1]
-            nodes.add( src.function.split()[0] )
             arc = (src.function.split()[0], dst.function.split()[0])
-            lnr=src.lineNumber
-            if lnr is not None:
-                lbl = "%s:%d" % (src.sourceFile,lnr)
-            else:
-                lbl = '[None]'
+            td = src.templateDict()
             if arc in arcs:
-                arcs[arc].add(lbl)
+                arcs[arc][td['lineno']] = td
             else:
-                arcs[arc] = set([lbl])
+                arcs[arc] = {td['lineno']: td}
 
-        nodes.add(stack[-1].function.split()[0])
         
     fd.write("""digraph ftrace {
     node [shape=box, style=rounded]
 """)
 
-    for (src,dst),labels in arcs.items():
-        for lbl in labels:
-            fd.write('    %s -> %s [label="%s"]\n' % (src,dst,lbl))
+    if Frame._prefix is not None and Frame._prefix:
+        tmpl = FRAME_DOT_ARC
+    else:
+        tmpl = FRAME_DOT_ARC_NO_URL
+
+    for (src,dst),nodes in arcs.items():
+        for (nr,td) in nodes.items():
+            td['src']=src
+            td['dst']=dst
+            fd.write('    ' + tmpl % td + '\n')
     fd.write('}\n')
 #==============================================================================
 
