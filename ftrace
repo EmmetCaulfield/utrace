@@ -38,7 +38,7 @@ import sys
 import os
 import subprocess as sub
 import collections
-from select import select
+import select
 import re
 import argparse
 import atexit
@@ -605,9 +605,9 @@ def gdb_chat(bp_queue):
             # Don't wait-to-write unless we've got the prompt, otherwise we'll
             # spin like crazy:
             if gotPrompt:
-                r_rdy, w_rdy, x_rdy = select(r_set, w_set, x_set)
+                r_rdy, w_rdy, x_rdy = select.select(r_set, w_set, x_set)
             else:
-                r_rdy, w_rdy, x_rdy = select(r_set, [], x_set)
+                r_rdy, w_rdy, x_rdy = select.select(r_set, [], x_set)
 
         except Exception as e:
             die("select() threw exception '%s'" % str(e))
