@@ -49,7 +49,7 @@ import cgi
 # Global variables
 #------------------------------------------------------------------------------
 # We need the version string when we're setting up argparse:
-VERSION="0.0.46"
+VERSION="0.0.48"
 
 # Command-line options:
 OPT = None
@@ -407,7 +407,7 @@ class Frame(object):
         args = self.templateDict()
 
         if args['args']:                                        # N-ary
-            args['function'] = FRAME_HTML_NARY % args
+            args['function'] = cgi.escape(FRAME_HTML_NARY % args)
         else:
             args['function'] = FRAME_HTML_NULLARY % args
 
@@ -687,7 +687,7 @@ def gdb_chat(bp_queue):
                     chunk = os.read( fo.fileno(), IO_BUFLEN )
                     if chunk:
                         errdata += chunk
-                        die( "Nonempty read from stderr: '%s'" % chunk)
+                        warn( "Nonempty read from stderr: '%s'" % chunk)
                 else:
                     die("Unrecognized file object: '%s'" % str(fo))
                 
@@ -939,9 +939,10 @@ def dump_stacks_as_dot(stackdumps, fd=sys.stdout):
         tmpl = FRAME_DOT_EDGE_NO_URL
 
     for (src,dst),nodes in edges.items():
-        for (nr,td) in edges.items():
+        for (nr,td) in nodes.items():
             td['src']=src
             td['dst']=dst
+            print(nr,td)
             fd.write('    ' + tmpl % td + '\n')
     fd.write('}\n')
 #==============================================================================
