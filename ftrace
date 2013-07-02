@@ -49,7 +49,7 @@ import cgi
 # Global variables
 #------------------------------------------------------------------------------
 # We need the version string when we're setting up argparse:
-VERSION="0.0.45"
+VERSION="0.0.46"
 
 # Command-line options:
 OPT = None
