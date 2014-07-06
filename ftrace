@@ -575,10 +575,8 @@ def gdb_chat(bp_queue):
     stkRe = re.compile(b'^#\d+[ ]+')
     # Line produced when the program-under-test exits normally:
     endRe = re.compile(b'^\[Inferior \d+ \(process \d+\) exited')
-    # Line produced when GDB sets a breakpoint:
-    bptRe = re.compile(b'^(?:Breakpoint (\d+) at 0x([0-9a-f]{6,}))(?:: file ([^,]+), line ([0-9]+)\.)?$')
-    # Subprompt noise from setting breakpoints:
-    spnRe = re.compile(b'^>+\(gdb\) |>+$')
+    # Line produced when GDB sets a breakpoint (might be preceded by subprompt/prompt noise):
+    bptRe = re.compile(b'(?:Breakpoint (\d+) at 0x([0-9a-f]{6,}))(?:: file ([^,]+), line ([0-9]+)\.)?$')
 
     #|Note: breakpoint \d+ also set at')
     # Lines produced when GDB reads symbols, etc:
@@ -641,9 +639,7 @@ def gdb_chat(bp_queue):
                     inbuf = b''
                     for line in lines:
                         dprint("    |%s|" % line)
-                        line=spnRe.sub(b'', line)
-                        dprint("    :%s:" % line)
-                        m = bptRe.match(line)
+                        m = bptRe.search(line)
                         if m:
                             if bp_in_flight is not None:
                                 n,a,filename,l, = m.groups()
