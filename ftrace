@@ -34,6 +34,7 @@
 
 """
 
+from __future__ import print_function
 import sys
 import os
 import subprocess as sub
@@ -903,15 +904,15 @@ def dump_stacks_as_text(stackdumps, fd=sys.stdout):
         for d_num, d_stk in dumped_stacks:
             if stk == d_stk:
                 is_dupe = True
-                print( "(Stackdump %d is a duplicate of %d, not dumping)" % (num, d_num))
+                print( "(Stackdump %d is a duplicate of %d, not dumping)" % (num, d_num), file=fd)
                 break
 
         if not is_dupe:
             indent = 1
             dumped_stacks.appendleft( (num, stk) )
-            print( "Stackdump %d:" % num )
+            print( "Stackdump %d:" % num, file=fd)
             for frame in stk:
-                print( "\t"*indent + str(frame))
+                print( "\t"*indent + str(frame), file=fd)
                 indent += 1
                 
 
