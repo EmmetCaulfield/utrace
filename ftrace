@@ -386,19 +386,19 @@ class Frame(object):
         # parentheses in the arguments, so we have to ensure that the argument
         # list remains intact. We do this by assuming that the first '(' is
         # the start of the argument list, and the last ')' is the end.
-        bits = self.function.split('(')
+        bits = self.function.split(b'(')
         name = bits[0].strip()                          # Function name
-        bits = '('.join(bits[1:]).strip().split(')')
-        args = ')'.join(bits[:-1])                      # Argument list            
+        bits = b'('.join(bits[1:]).strip().split(b')')
+        args = b')'.join(bits[:-1])                      # Argument list            
 
         # The last frame in a stack gets the line-number off by one:
         adj = 1 if self.number==0 else 0
 
         d = {
-            'name'   : name,
-            'args'   : args,
+            'name'   : name.decode("utf-8"),
+            'args'   : args.decode("utf-8"),
             'frameno': str(self.number),
-            'file'   : '' if self.sourceFile is None else self.sourceFile,
+            'file'   : '' if self.sourceFile is None else self.sourceFile.decode("utf-8"),
             'address': '' if self.address is None else '0x%x' % self.address,
             'prefix' : '' if Frame._prefix is None else Frame._prefix,
             'lineno' : '' if self.lineNumber is None else str(self.lineNumber-adj)
