@@ -331,7 +331,7 @@ class Frame(object):
             self.sourceFile = b':'.join(bits[:-1])
             if Frame._strip is not None and \
                     len(self.sourceFile) > len(Frame._strip) and \
-                    self.sourceFile[:len(Frame._strip)] == Frame._strip:
+                    self.sourceFile[:len(Frame._strip)] == Frame._strip.encode("utf-8"):
                 self.sourceFile = self.sourceFile[len(Frame._strip):] 
     
 
