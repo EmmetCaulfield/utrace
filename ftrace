@@ -249,6 +249,9 @@ def parse_command_line():
             help='optional PROG arguments')
 
     OPT = CLAP.parse_args()
+
+    if which('dot') is None:
+        setattr(OPT, "dot", False)
     
     if OPT.url is not None:
         if OPT.html or OPT.dot:
