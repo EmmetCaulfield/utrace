@@ -949,8 +949,8 @@ def dump_stacks_as_dot(stackdumps, fd=sys.stdout):
 
     for (src,dst),nodes in edges.items():
         for (nr,td) in nodes.items():
-            td['src']=src
-            td['dst']=dst
+            td['src']=src.decode("utf-8")
+            td['dst']=dst.decode("utf-8")
             print(nr,td)
             fd.write('    ' + tmpl % td + '\n')
     fd.write('}\n')
