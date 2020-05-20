@@ -1,10 +1,12 @@
 #!/usr/bin/python
 """
-    This Python script, 'ftrace', generates a function call trace for a
-    program given on the command-line.
+    This Python script, 'utrace' (for "user" trace), generates a function 
+    call trace for a program given on the command-line. It was originally
+    called 'ftrace' but renamed to avoid the name clash with the Linux
+    kernel functionality.
 
     I found that 'strace', which traces system calls, and 'ltrace', which
-    traces library calls, didn't do what I wanted: just trace the function
+    traces library calls, didn't do what I wanted: just trace "my" function
     calls in a program. Basically, I had this exact problem:
     
         http://stackoverflow.com/questions/311840/tool-to-trace-local-function-calls-in-linux 
@@ -16,14 +18,14 @@
     I'm using it to try to get a handle on 'perf', and have been using it
     like this:
     
-        $ ftrace --dot perf | dot -Tsvg -o ftrace.svg
-        $ firefox ftrace.svg
+        $ utrace --dot perf | dot -Tsvg -o utrace.svg
+        $ firefox utrace.svg
     
     or (with OpenGrok):
     
-        $ ftrace -u http://localhost:8080/source/xref/linux-3.8.8-02-emmet/tools/perf \\
-        > -o ftrace.html perf
-        $ firefox ftrace.html
+        $ utrace -u http://localhost:8080/source/xref/linux-3.8.8-02-emmet/tools/perf \\
+        > -o utrace.html perf
+        $ firefox utrace.html
 
     TODO: clean up gdb_chat(): it's an ad-hoc mess; objectify the GDB
         functionality; and add an option to "merge" the common parts of
@@ -83,19 +85,19 @@ READELF_CMD = ['readelf', '-s']
 
 # Frame HTML templates:
 FRAME_HTML = """<tr>
-  <td class="ftrace_stack_pos">%(frameno)s</td>
-  <td class="ftrace_address">%(address)s</td>
-  <td class="ftrace_function">%(function)s</td>
-  <td class="ftrace_file">%(file)s</td>
-  <td class="ftrace_lineno">%(lineno)s</td>
+  <td class="utrace_stack_pos">%(frameno)s</td>
+  <td class="utrace_address">%(address)s</td>
+  <td class="utrace_function">%(function)s</td>
+  <td class="utrace_file">%(file)s</td>
+  <td class="utrace_lineno">%(lineno)s</td>
 <tr>
 """
 FRAME_HTML_LINENO = """<a href="%(prefix)s/%(file)s#%(lineno)s" """ + \
         """target="opengrok">%(lineno)s</a>"""
 FRAME_HTML_NULLARY = """%(name)s()"""
-FRAME_HTML_NARY = """%(name)s(<span class="ftrace_fn_args_ellipsis" """ + \
+FRAME_HTML_NARY = """%(name)s(<span class="utrace_fn_args_ellipsis" """ + \
         """title="%(args)s">...</span>"""
-FRAME_HTML_NARY += """<span class="ftrace_fn_args">%(args)s</span>)"""
+FRAME_HTML_NARY += """<span class="utrace_fn_args">%(args)s</span>)"""
 
 # Frame DOT templates:
 FRAME_DOT_EDGE = """%(src)s -> %(dst)s [label="%(file)s:%(lineno)s", """ + \
@@ -201,8 +203,8 @@ def parse_command_line():
     # Add command-line arguments:
 
     # 'Help' and 'version' flags are mutually exclusive:
-    CLAP = argparse.ArgumentParser( prog="ftrace", add_help=False,
-            description="Generates a function call trace." )
+    CLAP = argparse.ArgumentParser( prog="utrace", add_help=False,
+            description="Generates a user-level function call trace." )
     group=CLAP.add_mutually_exclusive_group()
     group.add_argument('-h', '--help', action='help', 
             help="print this help message and exit;")
@@ -213,7 +215,7 @@ def parse_command_line():
     CLAP.add_argument('-D', '--debug', action='store_true',
             help="print copious debug output on stderr;")
     CLAP.add_argument('-l', '--log', action='store_true',
-            help="turn on logging to ./ftrace.log")
+            help="turn on logging to ./utrace.log")
 
     # Output format:
     group=CLAP.add_mutually_exclusive_group()
@@ -381,7 +383,7 @@ class Frame(object):
         
         # The function is the hardest bit because function argument lists can
         # be very long. We decide if a function is nullary or (n>0)-ary. If
-        # nullary, we use FTRACE_HTML_NULLARY, otherwise FTRACE_HTML_NARY.
+        # nullary, we use UTRACE_HTML_NULLARY, otherwise UTRACE_HTML_NARY.
         # The complication is that I'm not 100% certain that there are never
         # parentheses in the arguments, so we have to ensure that the argument
         # list remains intact. We do this by assuming that the first '(' is
@@ -812,16 +814,16 @@ def dump_stacks_as_html(stackdumps, fd=sys.stdout):
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>ftrace Stack Dumps</title>
+    <title>utrace Stack Dumps</title>
     <style type="text/css">
 /*<![CDATA[ */
-html, body, div#ftrace, div#right, iframe#opengrok {
+html, body, div#utrace, div#right, iframe#opengrok {
     height: 100%;
 }
 body, iframe#opengrok, div#right {
     overflow: hidden;
 }
-div#ftrace {
+div#utrace {
     overflow: scroll;
     width: 500px;
     float: left;
@@ -849,21 +851,21 @@ th, td {
     border: 1px solid black;
     padding: 1px 1ex 1px 1ex;
 }
-.ftrace_fn_args, .ftrace_stack_pos {
+.utrace_fn_args, .utrace_stack_pos {
     display: none;
 }
-.ftrace_fn_args_ellipsis {
+.utrace_fn_args_ellipsis {
     border: none;
     padding: 0px;
 }
-.ftrace_lineno, .ftrace_address {
+.utrace_lineno, .utrace_address {
     text-align: right;
 }
 /*]]>>*/
     </style>
   </head>
   <body>
-    <div id="ftrace">
+    <div id="utrace">
 """)
     dumped_stacks = collections.deque()
     for num,stk in stackdumps:
@@ -934,7 +936,7 @@ def dump_stacks_as_dot(stackdumps, fd=sys.stdout):
             else:
                 edges[edge] = {td['lineno']: td}
 
-    fd.write("""digraph ftrace {
+    fd.write("""digraph utrace {
     node [shape=box, style=rounded]
 """)
 

@@ -1,13 +1,13 @@
-Help on module ftrace:
+Help on module utrace:
 
 NAME
-    ftrace
+    utrace
 
 FILE
-    /home/emmet/WIP/ftrace/ftrace
+    /home/emmet/WIP/utrace/utrace
 
 DESCRIPTION
-    This Python script, 'ftrace', generates a function call trace for a
+    This Python script, 'utrace', generates a function call trace for a
     program given on the command-line.
     
     I found that 'strace', which traces system calls, and 'ltrace', which
@@ -23,14 +23,14 @@ DESCRIPTION
     I'm using it to try to get a handle on 'perf', and have been using it
     like this:
     
-        $ ftrace --dot perf | dot -Tsvg -o ftrace.svg
-        $ firefox ftrace.svg
+        $ utrace --dot perf | dot -Tsvg -o utrace.svg
+        $ firefox utrace.svg
     
     or (with OpenGrok):
     
-        $ ftrace -u http://localhost:8080/source/xref/linux-3.8.8-02-emmet/tools/perf \
-        > -o ftrace.html perf
-        $ firefox ftrace.html
+        $ utrace -u http://localhost:8080/source/xref/linux-3.8.8-02-emmet/tools/perf \
+        > -o utrace.html perf
+        $ firefox utrace.html
     
     TODO: clean up gdb_chat(): it's an ad-hoc mess; objectify the GDB
         functionality; and add an option to "merge" the common parts of
@@ -154,9 +154,9 @@ DATA
     CLAP = None
     FRAME_DOT_EDGE = '%(src)s -> %(dst)s [label="%(file)s:%(lineno)s",...(...
     FRAME_DOT_EDGE_NO_URL = '%(src)s -> %(dst)s [label="%(file)s:%(lineno)...
-    FRAME_HTML = '<tr>\n  <td class="ftrace_stack_pos">%(frameno)s<...  <t...
+    FRAME_HTML = '<tr>\n  <td class="utrace_stack_pos">%(frameno)s<...  <t...
     FRAME_HTML_LINENO = '<a href="%(prefix)s/%(file)s#%(lineno)s" target="...
-    FRAME_HTML_NARY = '%(name)s(<span class="ftrace_fn_args_ellipsis" t......
+    FRAME_HTML_NARY = '%(name)s(<span class="utrace_fn_args_ellipsis" t......
     FRAME_HTML_NULLARY = '%(name)s()'
     GDB_BRKPT_CMD = 'b *0x%x\ncommands\n  silent\n  bt\n  cont\nend\n'
     GDB_CMD = ['gdb', '-q']
